@@ -195,12 +195,29 @@ export function generateCSV(
       if (vpcMatch) {
         const node1 = vpcMatch[1];
         const node2 = vpcMatch[2];
+
+        // Determine pod based on node number range
+        // Extract first digit to determine pod (3xx = pod-1, 4xx = pod-2)
+        const nodeNumMatch = node1.match(/^(\d)/);
+        if (nodeNumMatch) {
+          const firstDigit = nodeNumMatch[1];
+          pod = firstDigit === '3' ? 'pod-1' : firstDigit === '4' ? 'pod-2' : pod;
+        }
+
         fullPath = `${pod}/protpaths-${node1}-${node2}/pathep-[${pathName}]`;
       } else {
         // Single path (format: node-port)
         const singleMatch = pathName.match(/^([\d()X]+)[-\/]/);
         if (singleMatch) {
           const node = singleMatch[1];
+
+          // Determine pod based on node number range
+          const nodeNumMatch = node.match(/^(\d)/);
+          if (nodeNumMatch) {
+            const firstDigit = nodeNumMatch[1];
+            pod = firstDigit === '3' ? 'pod-1' : firstDigit === '4' ? 'pod-2' : pod;
+          }
+
           fullPath = `${pod}/paths-${node}/pathep-[${pathName}]`;
         } else {
           // Fallback
