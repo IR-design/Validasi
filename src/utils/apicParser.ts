@@ -170,54 +170,44 @@ export function generateCSV(
 
   const rows = notAllowedPaths.map(pathName => {
     let fullPath = '';
-    let pod = 'pod-2'; // default fallback
+    let pod = 'pod-1'; // default fallback
 
-    // Try to find pod and full path from moquery data first
+    // Try to find pod from moquery data
+    // First, try exact match
     const normalizedPathName = normalizePathName(pathName);
     let foundInMoquery = false;
 
     for (const attachment of pathAttachments) {
       if (normalizePathName(attachment.path) === normalizedPathName) {
-        // Use the exact fullPath from moquery if found
-        if (attachment.fullPath) {
-          fullPath = attachment.fullPath;
-          foundInMoquery = true;
-          break;
-        }
+        fullPath = attachment.fullPath;
         pod = attachment.pod;
+        foundInMoquery = true;
+        break;
       }
     }
 
-    // If not found in moquery, construct path based on pattern
+    // If not found exact match, try to infer pod from other paths with same VLAN
+    if (!foundInMoquery && pathAttachments.length > 0) {
+      // Get pod from any attachment with matching VLAN
+      const vlanMatch = pathAttachments.find(att => att.vlan === vlan);
+      if (vlanMatch) {
+        pod = vlanMatch.pod;
+      }
+    }
+
+    // If still not found in moquery, construct path based on pattern
     if (!foundInMoquery) {
       // Check if it's a VPC path - support patterns like 3(X)-3(X)-VPC or 425-426-VPC
       const vpcMatch = pathName.match(/([\d()X]+)-([\d()X]+)-VPC/);
       if (vpcMatch) {
         const node1 = vpcMatch[1];
         const node2 = vpcMatch[2];
-
-        // Determine pod based on node number range
-        // Extract first digit to determine pod (3xx = pod-1, 4xx = pod-2)
-        const nodeNumMatch = node1.match(/^(\d)/);
-        if (nodeNumMatch) {
-          const firstDigit = nodeNumMatch[1];
-          pod = firstDigit === '3' ? 'pod-1' : firstDigit === '4' ? 'pod-2' : pod;
-        }
-
         fullPath = `${pod}/protpaths-${node1}-${node2}/pathep-[${pathName}]`;
       } else {
         // Single path (format: node-port)
         const singleMatch = pathName.match(/^([\d()X]+)[-\/]/);
         if (singleMatch) {
           const node = singleMatch[1];
-
-          // Determine pod based on node number range
-          const nodeNumMatch = node.match(/^(\d)/);
-          if (nodeNumMatch) {
-            const firstDigit = nodeNumMatch[1];
-            pod = firstDigit === '3' ? 'pod-1' : firstDigit === '4' ? 'pod-2' : pod;
-          }
-
           fullPath = `${pod}/paths-${node}/pathep-[${pathName}]`;
         } else {
           // Fallback
