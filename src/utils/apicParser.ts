@@ -128,15 +128,17 @@ export function validateVlanAllowances(
 
   // Buat Set dari path yang ada di moquery dengan VLAN yang sesuai
   const filteredAttachments = pathAttachments.filter(att => att.vlan === endpointData.vlan);
-  const allowedPaths = new Set(
-    filteredAttachments.map(att => normalizePathName(att.path))
-  );
+  const allowedPathsMap = new Map<string, PathAttachment>();
+
+  filteredAttachments.forEach(att => {
+    allowedPathsMap.set(normalizePathName(att.path), att);
+  });
 
   // Validasi setiap path dari endpoint
   for (const path of endpointData.paths) {
     const normalizedPath = normalizePathName(path);
     // Path dianggap "allowed" jika ada di kedua input (endpoint DAN moquery)
-    const isAllowed = allowedPaths.has(normalizedPath);
+    const isAllowed = allowedPathsMap.has(normalizedPath);
 
     results.push({
       path,
@@ -168,55 +170,67 @@ export function generateCSV(
     .filter(r => r.status === 'not_allowed')
     .map(r => r.path);
 
+  // Build a map for quick lookup of moquery data
+  const moqueryMap = new Map<string, PathAttachment>();
+  pathAttachments.forEach(att => {
+    moqueryMap.set(normalizePathName(att.path), att);
+  });
+
+  // Determine the default pod from moquery data for this VLAN
+  const vlanAttachments = pathAttachments.filter(att => att.vlan === vlan);
+  const defaultPod = vlanAttachments.length > 0 ? vlanAttachments[0].pod : 'pod-1';
+
   const rows = notAllowedPaths.map(pathName => {
-    let fullPath = '';
-    let pod = 'pod-1'; // default fallback
-
-    // Try to find pod from moquery data
-    // First, try exact match
     const normalizedPathName = normalizePathName(pathName);
-    let foundInMoquery = false;
 
-    for (const attachment of pathAttachments) {
-      if (normalizePathName(attachment.path) === normalizedPathName) {
-        fullPath = attachment.fullPath;
-        pod = attachment.pod;
-        foundInMoquery = true;
-        break;
-      }
+    // First priority: Find exact match in moquery
+    const moqueryData = moqueryMap.get(normalizedPathName);
+    if (moqueryData) {
+      // Use exact fullPath from moquery
+      return `${vlan},${epg},${moqueryData.fullPath}`;
     }
 
-    // If not found exact match, try to infer pod from other paths with same VLAN
-    if (!foundInMoquery && pathAttachments.length > 0) {
-      // Get pod from any attachment with matching VLAN
-      const vlanMatch = pathAttachments.find(att => att.vlan === vlan);
-      if (vlanMatch) {
-        pod = vlanMatch.pod;
-      }
-    }
+    // Second priority: Find pod from any moquery entry with matching nodes
+    let pod = defaultPod;
 
-    // If still not found in moquery, construct path based on pattern
-    if (!foundInMoquery) {
-      // Check if it's a VPC path - support patterns like 3(X)-3(X)-VPC or 425-426-VPC
-      const vpcMatch = pathName.match(/([\d()X]+)-([\d()X]+)-VPC/);
-      if (vpcMatch) {
-        const node1 = vpcMatch[1];
-        const node2 = vpcMatch[2];
-        fullPath = `${pod}/protpaths-${node1}-${node2}/pathep-[${pathName}]`;
-      } else {
-        // Single path (format: node-port)
-        const singleMatch = pathName.match(/^([\d()X]+)[-\/]/);
-        if (singleMatch) {
-          const node = singleMatch[1];
-          fullPath = `${pod}/paths-${node}/pathep-[${pathName}]`;
-        } else {
-          // Fallback
-          fullPath = `${pod}/paths-XXX/pathep-[${pathName}]`;
+    // Try to extract nodes from path and find matching pod in moquery
+    const vpcMatch = pathName.match(/([\d()X]+)-([\d()X]+)-VPC/);
+    if (vpcMatch) {
+      const node1 = vpcMatch[1];
+      const node2 = vpcMatch[2];
+
+      // Look for any moquery entry with same nodes to get correct pod
+      for (const att of pathAttachments) {
+        const attMatch = att.fullPath.match(/protpaths-([\d()X]+)-([\d()X]+)/);
+        if (attMatch && attMatch[1] === node1 && attMatch[2] === node2) {
+          pod = att.pod;
+          break;
         }
       }
+
+      // Construct VPC path
+      return `${vlan},${epg},${pod}/protpaths-${node1}-${node2}/pathep-[${pathName}]`;
     }
 
-    return `${vlan},${epg},${fullPath}`;
+    // Handle single path (non-VPC)
+    const singleMatch = pathName.match(/^([\d()X]+)[-\/]/);
+    if (singleMatch) {
+      const node = singleMatch[1];
+
+      // Look for any moquery entry with same node to get correct pod
+      for (const att of pathAttachments) {
+        const attMatch = att.fullPath.match(/paths-([\d()X]+)\//);
+        if (attMatch && attMatch[1] === node) {
+          pod = att.pod;
+          break;
+        }
+      }
+
+      return `${vlan},${epg},${pod}/paths-${node}/pathep-[${pathName}]`;
+    }
+
+    // Fallback
+    return `${vlan},${epg},${pod}/paths-XXX/pathep-[${pathName}]`;
   });
 
   return header + '\n' + rows.join('\n');
