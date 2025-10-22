@@ -69,20 +69,29 @@ export function parseMoqueryOutput(input: string): PathAttachment[] {
     // Skip empty lines
     if (!line.trim()) continue;
 
-    // Match protpaths (VPC)
-    let dnMatch = line.match(/dn\s*:\s*uni\/tn-[^\/]+\/ap-[^\/]+\/epg-([^\/]+)\/rspathAtt-\[topology\/(pod-\d+)\/protpaths-[\d-]+\/pathep-\[([^\]]+)\]\]/i);
+    // Match protpaths (VPC) - support patterns like 3(X)-3(X) or 425-426
+    let dnMatch = line.match(/dn\s*:\s*uni\/tn-[^\/]+\/ap-[^\/]+\/epg-([^\/]+)\/rspathAtt-\[topology\/(pod-\d+)\/protpaths-([\d()X-]+)\/pathep-\[([^\]]+)\]\]/i);
 
     let isVpc = true;
+    let protpathsIdentifier = '';
+
+    if (dnMatch) {
+      protpathsIdentifier = dnMatch[3]; // Capture the protpaths identifier (e.g., "3(X)-3(X)" or "425-426")
+    }
+
     // Match single paths (non-VPC)
     if (!dnMatch) {
-      dnMatch = line.match(/dn\s*:\s*uni\/tn-[^\/]+\/ap-[^\/]+\/epg-([^\/]+)\/rspathAtt-\[topology\/(pod-\d+)\/paths-[\d]+\/pathep-\[([^\]]+)\]\]/i);
+      dnMatch = line.match(/dn\s*:\s*uni\/tn-[^\/]+\/ap-[^\/]+\/epg-([^\/]+)\/rspathAtt-\[topology\/(pod-\d+)\/paths-([\d()X]+)\/pathep-\[([^\]]+)\]\]/i);
       isVpc = false;
+      if (dnMatch) {
+        protpathsIdentifier = dnMatch[3];
+      }
     }
 
     if (dnMatch) {
       const epg = dnMatch[1];
       const pod = dnMatch[2];
-      const pathName = dnMatch[3];
+      const pathName = isVpc ? dnMatch[4] : dnMatch[4];
 
       // Extract VLAN from EPG name
       const vlanMatch = epg.match(/VLAN(\d+)/i);
@@ -91,18 +100,9 @@ export function parseMoqueryOutput(input: string): PathAttachment[] {
       // Reconstruct fullPath
       let fullPath = '';
       if (isVpc) {
-        const vpcMatch = pathName.match(/(\d+)-(\d+)-VPC/);
-        if (vpcMatch) {
-          const node1 = vpcMatch[1];
-          const node2 = vpcMatch[2];
-          fullPath = `${pod}/protpaths-${node1}-${node2}/pathep-[${pathName}]`;
-        }
+        fullPath = `${pod}/protpaths-${protpathsIdentifier}/pathep-[${pathName}]`;
       } else {
-        const singleMatch = pathName.match(/^(\d+)[-\/]/);
-        if (singleMatch) {
-          const node = singleMatch[1];
-          fullPath = `${pod}/paths-${node}/pathep-[${pathName}]`;
-        }
+        fullPath = `${pod}/paths-${protpathsIdentifier}/pathep-[${pathName}]`;
       }
 
       if (vlan && pathName) {
@@ -172,30 +172,40 @@ export function generateCSV(
     let fullPath = '';
     let pod = 'pod-2'; // default fallback
 
-    // Try to find pod from moquery data first
+    // Try to find pod and full path from moquery data first
     const normalizedPathName = normalizePathName(pathName);
+    let foundInMoquery = false;
+
     for (const attachment of pathAttachments) {
       if (normalizePathName(attachment.path) === normalizedPathName) {
+        // Use the exact fullPath from moquery if found
+        if (attachment.fullPath) {
+          fullPath = attachment.fullPath;
+          foundInMoquery = true;
+          break;
+        }
         pod = attachment.pod;
-        break;
       }
     }
 
-    // Check if it's a VPC path (format: XXX-YYY-VPC-...)
-    const vpcMatch = pathName.match(/(\d+)-(\d+)-VPC/);
-    if (vpcMatch) {
-      const node1 = vpcMatch[1];
-      const node2 = vpcMatch[2];
-      fullPath = `${pod}/protpaths-${node1}-${node2}/pathep-[${pathName}]`;
-    } else {
-      // Single path (format: node-port)
-      const singleMatch = pathName.match(/^(\d+)[-\/]/);
-      if (singleMatch) {
-        const node = singleMatch[1];
-        fullPath = `${pod}/paths-${node}/pathep-[${pathName}]`;
+    // If not found in moquery, construct path based on pattern
+    if (!foundInMoquery) {
+      // Check if it's a VPC path - support patterns like 3(X)-3(X)-VPC or 425-426-VPC
+      const vpcMatch = pathName.match(/([\d()X]+)-([\d()X]+)-VPC/);
+      if (vpcMatch) {
+        const node1 = vpcMatch[1];
+        const node2 = vpcMatch[2];
+        fullPath = `${pod}/protpaths-${node1}-${node2}/pathep-[${pathName}]`;
       } else {
-        // Fallback
-        fullPath = `${pod}/paths-XXX/pathep-[${pathName}]`;
+        // Single path (format: node-port)
+        const singleMatch = pathName.match(/^([\d()X]+)[-\/]/);
+        if (singleMatch) {
+          const node = singleMatch[1];
+          fullPath = `${pod}/paths-${node}/pathep-[${pathName}]`;
+        } else {
+          // Fallback
+          fullPath = `${pod}/paths-XXX/pathep-[${pathName}]`;
+        }
       }
     }
 
